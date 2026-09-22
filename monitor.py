@@ -104,13 +104,18 @@ def load_history():
     if os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                history = json.load(f)
+            # 兼容旧版历史文件格式（旧脚本用的是 "seen_hashes" 字段）
+            if "seen_keys" not in history:
+                history["seen_keys"] = history.get("seen_hashes", [])
+            return history
         except (json.JSONDecodeError, IOError):
             pass
     return {"seen_keys": [], "last_check": None}
 
 
 def save_history(history):
+    history.setdefault("seen_keys", [])
     history["seen_keys"] = history["seen_keys"][-HISTORY_MAX:]
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history, f, ensure_ascii=False, indent=2)
