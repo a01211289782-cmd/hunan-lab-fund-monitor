@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-优化版：每天监控 水污染控制技术湖南省重点实验室开放基金 申报指南
+严格过滤版：监控 水污染控制技术湖南省重点实验室开放基金 申报指南
 """
 
 import requests
@@ -15,20 +15,20 @@ from email.mime.text import MIMEText
 from email.header import Header
 import time
 import urllib.parse
-import ssl
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 # ==================== 配置 ====================
-KEYWORDS = [
-    "水污染控制技术湖南省重点实验室开放基金",
-    "水污染控制技术湖南省重点实验室 申报指南",
-    "水污染控制技术湖南省重点实验室 开放基金 申报",
-    "水污染控制技术 重点实验室 开放基金",
+# 必须同时包含这些核心词才算相关
+MUST_CONTAIN = ["开放基金", "申报"]          # 必须包含
+STRONG_KEYWORDS = [                         # 强相关词
+    "水污染控制技术湖南省重点实验室",
+    "水污染控制技术 重点实验室",
+    "湖南省重点实验室开放基金",
 ]
 
 TARGET_SITES = [
-    "https://sthjt.hunan.gov.cn/sthjt/xxgk/tzgg/",  # 通知公告
+    "https://sthjt.hunan.gov.cn/sthjt/xxgk/tzgg/",
     "https://sthjt.hunan.gov.cn/",
 ]
 
@@ -42,26 +42,17 @@ RECEIVER = os.getenv("RECEIVER_EMAIL", "")
 HISTORY_FILE = "monitor_history.json"
 # ==============================================
 
-# 创建带重试的 Session
 def create_session():
     session = requests.Session()
-    retry = Retry(
-        total=3,
-        backoff_factor=1,
-        status_forcelist=[429, 500, 502, 503, 504]
-    )
+    retry = Retry(total=2, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
     adapter = HTTPAdapter(max_retries=retry)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
-    
-    # 忽略部分 SSL 问题（针对国内政府网站）
     session.verify = False
     requests.packages.urllib3.disable_warnings()
-    
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9",
     })
     return session
 
@@ -80,18 +71,27 @@ def save_history(history):
 def get_content_hash(text):
     return hashlib.md5(text.encode("utf-8")).hexdigest()
 
+def is_relevant(title: str) -> bool:
+    """严格判断是否相关"""
+    title = title.lower()
+    # 必须包含“开放基金”和“申报”
+    if not all(word in title for word in MUST_CONTAIN):
+        return False
+    # 必须包含至少一个强相关词
+    if not any(kw.lower() in title for kw in STRONG_KEYWORDS):
+        return False
+    return True
+
 def send_email(subject, content):
     if not EMAIL_ENABLED or not all([SENDER, PASSWORD, RECEIVER]):
-        print("邮件未配置或未启用，仅打印结果：")
+        print("邮件未配置，仅打印：")
         print(subject)
         print(content)
         return
-
     msg = MIMEText(content, "plain", "utf-8")
     msg["From"] = Header(SENDER)
     msg["To"] = Header(RECEIVER)
     msg["Subject"] = Header(subject, "utf-8")
-
     try:
         server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT)
         server.login(SENDER, PASSWORD)
@@ -104,79 +104,63 @@ def send_email(subject, content):
 def check_website(url):
     results = []
     try:
-        resp = session.get(url, timeout=25)
+        resp = session.get(url, timeout=20)
         resp.encoding = resp.apparent_encoding or "utf-8"
         soup = BeautifulSoup(resp.text, "lxml")
-        text = soup.get_text()
-
-        for kw in KEYWORDS:
-            if kw in text:
-                for a in soup.find_all("a", href=True):
-                    link_text = a.get_text(strip=True)
-                    if any(k in link_text for k in KEYWORDS) or "开放基金" in link_text or "申报指南" in link_text:
-                        full_url = urllib.parse.urljoin(url, a["href"])
-                        results.append({
-                            "source": "官网",
-                            "title": link_text[:150],
-                            "url": full_url,
-                            "keyword": kw
-                        })
-                if not results:
-                    results.append({
-                        "source": "官网",
-                        "title": f"页面包含关键词: {kw}",
-                        "url": url,
-                        "keyword": kw
-                    })
+        for a in soup.find_all("a", href=True):
+            title = a.get_text(strip=True)
+            if is_relevant(title):
+                full_url = urllib.parse.urljoin(url, a["href"])
+                results.append({
+                    "source": "官网",
+                    "title": title[:150],
+                    "url": full_url
+                })
         print(f"✅ 成功检查: {url}")
     except Exception as e:
-        print(f"❌ 检查网站 {url} 失败: {str(e)[:100]}")
+        print(f"❌ 检查网站失败: {url} | {str(e)[:80]}")
     return results
 
-def search_baidu(keyword, num=10):
+def search_baidu(keyword):
     results = []
     try:
-        url = f"https://www.baidu.com/s?wd={urllib.parse.quote(keyword)}&rn={num}"
+        url = f"https://www.baidu.com/s?wd={urllib.parse.quote(keyword)}&rn=10"
         resp = session.get(url, timeout=15)
         soup = BeautifulSoup(resp.text, "lxml")
         for item in soup.select(".result, .c-container"):
             title_tag = item.select_one("h3 a") or item.select_one("a")
             if title_tag:
                 title = title_tag.get_text(strip=True)
-                href = title_tag.get("href", "")
-                if any(k in title for k in KEYWORDS) or "开放基金" in title or "申报指南" in title:
+                if is_relevant(title):
                     results.append({
                         "source": "百度",
                         "title": title,
-                        "url": href,
-                        "keyword": keyword
+                        "url": title_tag.get("href", "")
                     })
         print(f"✅ 百度搜索完成: {keyword}")
     except Exception as e:
-        print(f"❌ 百度搜索失败: {e}")
+        print(f"❌ 百度失败: {e}")
     return results
 
-def search_bing(keyword, num=10):
+def search_bing(keyword):
     results = []
     try:
-        url = f"https://cn.bing.com/search?q={urllib.parse.quote(keyword)}&count={num}"
+        url = f"https://cn.bing.com/search?q={urllib.parse.quote(keyword)}&count=10"
         resp = session.get(url, timeout=15)
         soup = BeautifulSoup(resp.text, "lxml")
         for item in soup.select("li.b_algo"):
             title_tag = item.select_one("h2 a")
             if title_tag:
                 title = title_tag.get_text(strip=True)
-                href = title_tag.get("href", "")
-                if any(k in title for k in KEYWORDS) or "开放基金" in title or "申报指南" in title:
+                if is_relevant(title):
                     results.append({
                         "source": "必应",
                         "title": title,
-                        "url": href,
-                        "keyword": keyword
+                        "url": title_tag.get("href", "")
                     })
         print(f"✅ 必应搜索完成: {keyword}")
     except Exception as e:
-        print(f"❌ 必应搜索失败: {e}")
+        print(f"❌ 必应失败: {e}")
     return results
 
 def run_monitor():
@@ -184,13 +168,18 @@ def run_monitor():
     history = load_history()
     all_results = []
 
-    # 检查重点网站
+    # 尝试检查官网
     for site in TARGET_SITES:
         all_results.extend(check_website(site))
-        time.sleep(2)
+        time.sleep(1.5)
 
-    # 全网搜索（更可靠）
-    for kw in KEYWORDS:
+    # 全网搜索（主要依靠这个）
+    search_keywords = [
+        "水污染控制技术湖南省重点实验室开放基金 申报指南",
+        "水污染控制技术湖南省重点实验室 开放基金",
+        "\"水污染控制技术\" 重点实验室 开放基金 申报",
+    ]
+    for kw in search_keywords:
         all_results.extend(search_baidu(kw))
         time.sleep(2)
         all_results.extend(search_bing(kw))
@@ -205,19 +194,19 @@ def run_monitor():
             history["seen_hashes"].append(h)
             unique_results.append(r)
 
-    history["seen_hashes"] = history["seen_hashes"][-500:]
+    history["seen_hashes"] = history["seen_hashes"][-300:]
     history["last_check"] = datetime.now().isoformat()
     save_history(history)
 
     if unique_results:
-        print(f"🎉 发现 {len(unique_results)} 条新结果！")
+        print(f"🎉 发现 {len(unique_results)} 条高度相关结果！")
         lines = [f"发现时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"]
         for i, r in enumerate(unique_results, 1):
             lines.append(f"{i}. 【{r['source']}】{r['title']}\n   链接: {r['url']}\n")
         content = "\n".join(lines)
-        send_email("【重要提醒】水污染控制技术湖南省重点实验室开放基金申报指南可能已发布！", content)
+        send_email("【重要】可能发现水污染控制技术湖南省重点实验室开放基金申报指南！", content)
     else:
-        print("未发现新内容。")
+        print("未发现高度相关新内容。")
 
     print("监控结束。")
 
