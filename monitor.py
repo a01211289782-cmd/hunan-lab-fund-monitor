@@ -361,6 +361,80 @@ def fetch_hraes():
     return results
 
 
+# ==================== 数据源：百度/必应网页搜索（补充，不限于官方网站） ====================
+
+SEARCH_KEYWORDS = [
+    "水污染控制技术湖南省重点实验室开放基金 申报指南",
+    "水污染控制技术湖南省重点实验室 开放基金",
+    "水污染控制技术 湖南省重点实验室 开放基金 申报",
+]
+
+
+def search_baidu(keyword):
+    """百度网页搜索（best-effort：搜索引擎常对数据中心/境外 IP 做反爬限制，
+    连不上或返回 0 条是常见现象，不代表脚本出错）"""
+    results = []
+    try:
+        import urllib.parse
+        url = f"https://www.baidu.com/s?wd={urllib.parse.quote(keyword)}&rn=10"
+        resp = session.get(url, timeout=15, verify=False)
+        resp.encoding = resp.apparent_encoding or "utf-8"
+        soup = BeautifulSoup(resp.text, "lxml")
+        for item in soup.select(".result, .c-container"):
+            title_tag = item.select_one("h3 a") or item.select_one("a")
+            if not title_tag:
+                continue
+            title = title_tag.get_text(strip=True)
+            href = title_tag.get("href", "")
+            if title and is_relevant(title) and href:
+                dedup_key = make_dedup_key("baidu", href)
+                results.append({
+                    "source": "百度搜索",
+                    "title": title[:200],
+                    "url": href,
+                    "date": "",
+                    "content_preview": "",
+                    "score": relevance_score(title),
+                    "dedup_key": dedup_key,
+                })
+        print(f"  [百度:{keyword}] 筛选后 {len(results)} 条")
+    except Exception as e:
+        print(f"  [百度:{keyword}] 失败（常见于反爬限制）: {str(e)[:80]}")
+    return results
+
+
+def search_bing(keyword):
+    """必应网页搜索（同样 best-effort）"""
+    results = []
+    try:
+        import urllib.parse
+        url = f"https://cn.bing.com/search?q={urllib.parse.quote(keyword)}&count=10"
+        resp = session.get(url, timeout=15, verify=False)
+        resp.encoding = resp.apparent_encoding or "utf-8"
+        soup = BeautifulSoup(resp.text, "lxml")
+        for item in soup.select("li.b_algo"):
+            title_tag = item.select_one("h2 a")
+            if not title_tag:
+                continue
+            title = title_tag.get_text(strip=True)
+            href = title_tag.get("href", "")
+            if title and is_relevant(title) and href:
+                dedup_key = make_dedup_key("bing", href)
+                results.append({
+                    "source": "必应搜索",
+                    "title": title[:200],
+                    "url": href,
+                    "date": "",
+                    "content_preview": "",
+                    "score": relevance_score(title),
+                    "dedup_key": dedup_key,
+                })
+        print(f"  [必应:{keyword}] 筛选后 {len(results)} 条")
+    except Exception as e:
+        print(f"  [必应:{keyword}] 失败（常见于反爬限制）: {str(e)[:80]}")
+    return results
+
+
 # ==================== 邮件通知 ====================
 
 def send_email(subject, content):
@@ -411,6 +485,14 @@ def run_monitor():
     # 3. 环科院官网（best-effort，失败不影响整体）
     print("正在检查环科院官网（best-effort）...")
     all_results.extend(fetch_hraes())
+
+    # 4. 百度/必应网页搜索（补充覆盖官方网站之外的来源，best-effort）
+    print("正在进行网页搜索（百度/必应）...")
+    for kw in SEARCH_KEYWORDS:
+        all_results.extend(search_baidu(kw))
+        time.sleep(2)
+        all_results.extend(search_bing(kw))
+        time.sleep(2)
 
     # 去重（基于 dedup_key，对照历史记录）
     seen_keys = set(history.get("seen_keys", []))
