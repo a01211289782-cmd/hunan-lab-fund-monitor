@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-GitHub Actions 专用：每天监控 水污染控制技术湖南省重点实验室开放基金 申报指南
+优化版：每天监控 水污染控制技术湖南省重点实验室开放基金 申报指南
 """
 
 import requests
@@ -15,19 +15,21 @@ from email.mime.text import MIMEText
 from email.header import Header
 import time
 import urllib.parse
+import ssl
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-# ==================== 配置（通过 GitHub Secrets 传入） ====================
+# ==================== 配置 ====================
 KEYWORDS = [
     "水污染控制技术湖南省重点实验室开放基金",
     "水污染控制技术湖南省重点实验室 申报指南",
     "水污染控制技术湖南省重点实验室 开放基金 申报",
-    "水污染控制技术湖南省重点实验室基金",
-   ]
+    "水污染控制技术 重点实验室 开放基金",
+]
 
 TARGET_SITES = [
-    "http://www.hraes.cn/",
+    "https://sthjt.hunan.gov.cn/sthjt/xxgk/tzgg/",  # 通知公告
     "https://sthjt.hunan.gov.cn/",
-    "https://sthjt.hunan.gov.cn/sthjt/xxgk/tzgg/",
 ]
 
 EMAIL_ENABLED = os.getenv("EMAIL_ENABLED", "true").lower() == "true"
@@ -38,11 +40,32 @@ PASSWORD = os.getenv("EMAIL_PASSWORD", "")
 RECEIVER = os.getenv("RECEIVER_EMAIL", "")
 
 HISTORY_FILE = "monitor_history.json"
-# ==================================================================================
+# ==============================================
 
-headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-}
+# 创建带重试的 Session
+def create_session():
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504]
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    
+    # 忽略部分 SSL 问题（针对国内政府网站）
+    session.verify = False
+    requests.packages.urllib3.disable_warnings()
+    
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    })
+    return session
+
+session = create_session()
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
@@ -81,8 +104,8 @@ def send_email(subject, content):
 def check_website(url):
     results = []
     try:
-        resp = requests.get(url, headers=headers, timeout=20)
-        resp.encoding = resp.apparent_encoding
+        resp = session.get(url, timeout=25)
+        resp.encoding = resp.apparent_encoding or "utf-8"
         soup = BeautifulSoup(resp.text, "lxml")
         text = soup.get_text()
 
@@ -94,7 +117,7 @@ def check_website(url):
                         full_url = urllib.parse.urljoin(url, a["href"])
                         results.append({
                             "source": "官网",
-                            "title": link_text[:120],
+                            "title": link_text[:150],
                             "url": full_url,
                             "keyword": kw
                         })
@@ -105,15 +128,16 @@ def check_website(url):
                         "url": url,
                         "keyword": kw
                     })
+        print(f"✅ 成功检查: {url}")
     except Exception as e:
-        print(f"检查网站 {url} 失败: {e}")
+        print(f"❌ 检查网站 {url} 失败: {str(e)[:100]}")
     return results
 
-def search_baidu(keyword, num=8):
+def search_baidu(keyword, num=10):
     results = []
     try:
         url = f"https://www.baidu.com/s?wd={urllib.parse.quote(keyword)}&rn={num}"
-        resp = requests.get(url, headers=headers, timeout=15)
+        resp = session.get(url, timeout=15)
         soup = BeautifulSoup(resp.text, "lxml")
         for item in soup.select(".result, .c-container"):
             title_tag = item.select_one("h3 a") or item.select_one("a")
@@ -127,15 +151,16 @@ def search_baidu(keyword, num=8):
                         "url": href,
                         "keyword": keyword
                     })
+        print(f"✅ 百度搜索完成: {keyword}")
     except Exception as e:
-        print(f"百度搜索失败: {e}")
+        print(f"❌ 百度搜索失败: {e}")
     return results
 
-def search_bing(keyword, num=8):
+def search_bing(keyword, num=10):
     results = []
     try:
         url = f"https://cn.bing.com/search?q={urllib.parse.quote(keyword)}&count={num}"
-        resp = requests.get(url, headers=headers, timeout=15)
+        resp = session.get(url, timeout=15)
         soup = BeautifulSoup(resp.text, "lxml")
         for item in soup.select("li.b_algo"):
             title_tag = item.select_one("h2 a")
@@ -149,8 +174,9 @@ def search_bing(keyword, num=8):
                         "url": href,
                         "keyword": keyword
                     })
+        print(f"✅ 必应搜索完成: {keyword}")
     except Exception as e:
-        print(f"必应搜索失败: {e}")
+        print(f"❌ 必应搜索失败: {e}")
     return results
 
 def run_monitor():
@@ -161,14 +187,14 @@ def run_monitor():
     # 检查重点网站
     for site in TARGET_SITES:
         all_results.extend(check_website(site))
-        time.sleep(1)
+        time.sleep(2)
 
-    # 全网搜索
+    # 全网搜索（更可靠）
     for kw in KEYWORDS:
         all_results.extend(search_baidu(kw))
-        time.sleep(1.5)
+        time.sleep(2)
         all_results.extend(search_bing(kw))
-        time.sleep(1.5)
+        time.sleep(2)
 
     # 去重
     unique_results = []
