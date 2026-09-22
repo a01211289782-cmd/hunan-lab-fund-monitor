@@ -6,6 +6,9 @@ on:
     - cron: '0 1 * * *'
   workflow_dispatch:  # 允许手动运行
 
+permissions:
+  contents: write  # 允许提交历史记录文件
+
 jobs:
   monitor:
     runs-on: ubuntu-latest
@@ -36,6 +39,6 @@ jobs:
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add monitor_history.json || true
-          git commit -m "更新监控历史 $(date +'%Y-%m-%d %H:%M')" || echo "没有变化"
-          git push || true
+          git add monitor_history.json
+          git diff --staged --quiet || git commit -m "更新监控历史 $(date +'%Y-%m-%d %H:%M')"
+          git push
